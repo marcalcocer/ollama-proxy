@@ -1,0 +1,12 @@
+server:
+  port: 5000
+
+spring:
+  application:
+    name: ollama-proxy
+  ai:
+    ollama:
+      base-url: http://172.21.144.1:11434
+      chat:
+        options:
+          model: llama3 # Default fallback model
