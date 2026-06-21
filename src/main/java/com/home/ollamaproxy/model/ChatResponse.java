@@ -5,6 +5,7 @@ public record ChatResponse(
         OllamaMessage message,
         boolean done,
         String conversationId,
+        String conversationName,
         String response
 ) {
 }

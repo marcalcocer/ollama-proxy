@@ -175,4 +175,206 @@ No breaking change: existing calls that omit `conversationId` continue to work s
 
 ---
 
-*The rest of the original Implementation Next Steps remain unchanged.*
+## 8. Conversation Naming & Listing
+
+**Goal** – Automatically name conversations based on their content so clients can display a friendly title in a sidebar or list. Also expose an endpoint to list all active conversations with their names.
+
+### API changes
+
+#### `GET /conversations` (NEW)
+Returns all active conversations with their metadata (id, name, message count, last activity).
+
+**Response (200 OK):**
+```json
+{
+  "conversations": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "Index fund investment advice",
+      "messageCount": 4,
+      "updatedAt": "2026-06-21T19:30:00Z"
+    },
+    {
+      "id": "661e8400-e29b-41d4-a716-446655440001",
+      "name": "Debugging Spring Boot configuration",
+      "messageCount": 12,
+      "updatedAt": "2026-06-21T20:15:00Z"
+    }
+  ]
+}
+```
+
+#### `POST /chat` — auto-naming on first user message
+When a conversation is **new** (no prior history), after returning the assistant reply to the client, the server sends a **background** request to Ollama to generate a short title:
+
+```
+System: "Generate a concise title (max 6 words) for this conversation based on the user's first message. Respond with only the title, no quotes or punctuation."
+User:   "<first user prompt>"
+```
+
+The generated name is stored alongside the conversation metadata. This happens **asynchronously** so it does not add latency to the chat response.
+
+Existing calls (stateless, no `conversationId`) are unaffected — no naming is triggered.
+
+#### `POST /conversations/{conversationId}/rename` (NEW)
+Regenerates the conversation name by sending the **full message history** to Ollama and asking for a more accurate summary title.
+
+**Response (200 OK):**
+```json
+{
+  "conversationId": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "Updated title based on full conversation"
+}
+```
+
+#### `GET /conversations/{conversationId}` — add name to response
+Current response is extended to include the conversation name:
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "Index fund investment advice",
+  "messages": [ ... ]
+}
+```
+
+#### `ChatResponse` — add name field
+The `ChatResponse` now includes the conversation name (nullable for stateless chats):
+
+```json
+{
+  "model": "llama3:latest",
+  "message": { "role": "assistant", "content": "..." },
+  "done": true,
+  "conversationId": "550e8400-...",
+  "conversationName": "Index fund investment advice",
+  "response": "..."
+}
+```
+
+### Storage changes
+
+Extend `ConversationState` in `ConversationService` with a `name` field:
+
+```java
+private static final class ConversationState {
+    private final List<OllamaMessage> messages = new ArrayList<>();
+    private Instant updatedAt = Instant.now();
+    private String name; // null until generated
+    private boolean namingInProgress; // true while async naming is running
+}
+```
+
+Add a `ConversationSummary` record for the list endpoint:
+
+```java
+public record ConversationSummary(
+    String id,
+    String name,
+    int messageCount,
+    Instant updatedAt
+) {}
+```
+
+New methods on `ConversationService`:
+- `setName(String conversationId, String name)` — sets the name
+- `getName(String conversationId)` — returns the name or null
+- `listConversations()` — returns `List<ConversationSummary>` of all non-expired conversations
+
+### Naming prompt
+
+The prompt used for title generation should be configurable via `application.yml`:
+
+```yaml
+app:
+  conversations:
+    naming-prompt: "Generate a concise title (max 6 words) for this conversation based on the user's first message. Respond with only the title, no quotes or punctuation."
+    naming-model: "llama3.2:3b"  # lightweight model for naming
+```
+
+Using a smaller/faster model for naming (e.g., `llama3.2:3b`) keeps costs low and avoids blocking the main chat model.
+
+### Flow diagram
+
+```
+Client                          Server                          Ollama
+  |                                |                               |
+  |-- POST /chat (prompt="...") -->|                               |
+  |                                |-- Check if new conversation   |
+  |                                |-- Store user message          |
+  |                                |-- /api/chat (full history) -->|
+  |                                |<-- assistant reply ---------- |
+  |                                |-- Store assistant reply       |
+  |<-- ChatResponse (200) --------|                               |
+  |                                |                               |
+  |                                |  (async, if first message)    |
+  |                                |-- /api/chat (naming prompt)->|
+  |                                |<-- "Title" ------------------ |
+  |                                |-- store conversation name     |
+```
+
+### Impact on existing clients
+
+- **Non-breaking**: Existing clients that call `POST /chat` continue to work — the `conversationName` field is simply `null` until generated. The async naming does not add latency.
+- `GET /conversations/{id}` response shape changes (wraps messages in an object with `id` and `name` fields). This is a **minor breaking change** if clients consume this endpoint.
+- `GET /conversations` is new — no impact.
+- `POST /conversations/{id}/rename` is new — no impact.
+
+### Implementation steps
+1. Add `name` field to `ConversationState` and create `ConversationSummary` record.
+2. Add `setName`, `getName`, `listConversations` methods to `ConversationService`.
+3. In `OllamaService.chat()`, after storing the assistant reply, detect if this is a new conversation and fire an async `@Async` method to generate the name.
+4. Add `POST /conversations/{id}/rename` and `GET /conversations` endpoints to `OllamaController`.
+5. Update `GET /conversations/{id}` response to include id/name wrapper.
+6. Add `conversationName` field to `ChatResponse`.
+7. Add `app.conversations.naming-prompt` and `app.conversations.naming-model` config.
+8. Add tests for async naming, rename endpoint, and listing.
+
+### Concurrency & race conditions
+
+#### Async naming race
+
+If a second `POST /chat` arrives **before** the async naming call completes, the following could happen:
+
+1. **Duplicate naming calls**: Two separate async naming requests could be fired. The name should only be generated once.
+   - **Mitigation**: Use an atomic `compareAndSet`-style flag (`namingInProgress`) on `ConversationState` to ensure only one async naming call is ever launched per conversation. The flag is set to `true` before firing the async call and reset to `false` after the name is stored. The `chat()` method checks `namingInProgress` before scheduling a new naming task.
+
+2. **Stale name**: The auto-name is generated from the first message, but by the time the async call completes, several more messages may have been exchanged. The name might already feel outdated.
+   - **Mitigation**: This is acceptable — the auto-name is meant as a quick initial label. The client (or user) can call `POST /conversations/{id}/rename` at any time to regenerate a more accurate name from the full history.
+
+#### Rename vs auto-naming race
+
+If the user triggers `POST /conversations/{id}/rename` while the background auto-naming is still in flight:
+
+- The rename should take precedence and overwrite whatever the auto-naming eventually returns.
+- **Mitigation**: Both operations call the same `setName()` method, which is synchronized on `ConversationState`. The rename simply wins by being last. The auto-naming checks `namingInProgress` before writing, but the rename endpoint does not set this flag, so it always succeeds. `namingInProgress` is only used to prevent duplicate **auto-naming** calls.
+
+#### General multi-request concurrency on the same conversation
+
+Multiple concurrent `POST /chat` requests for the same conversation must not interleave or corrupt message order.
+
+**Current state**: `ConversationService` already uses `synchronized (state)` blocks around all read/write operations on the messages list, which guarantees thread safety at the message level.
+
+**Remaining concern**: The "is this conversation new?" check in `OllamaService.chat()` is not inside the synchronized block, so two concurrent requests for a brand-new conversation could both see an empty history and both trigger auto-naming.
+- **Mitigation**: The `namingInProgress` flag (see above) already addresses this — the first request sets it to `true`, the second sees it and skips scheduling. Both requests will produce the correct assistant reply independently; they just race on the name generation flag, which is harmless.
+
+#### Summary of thread-safety guarantees
+| Scenario | Safe? | Mechanism |
+|---|---|---|
+| Two simultaneous POST /chat, same conversation | ✅ | `synchronized` on `ConversationState` prevents message corruption |
+| Two simultaneous POST /chat, brand-new conversation | ✅ | `namingInProgress` atomic flag prevents double auto-naming |
+| Rename during auto-naming | ✅ | Synchronized `setName()`; rename always wins |
+| Stateless chat (no conversationId) | ✅ | No shared state |
+| Expired conversation cleanup during active chat | ✅ | Synchronized blocks and `ConcurrentHashMap` iteration safety |
+
+### Implementation steps
+1. Add `name` field to `ConversationState` and create `ConversationSummary` record.
+2. Add `setName`, `getName`, `listConversations` methods to `ConversationService`.
+3. In `OllamaService.chat()`, after storing the assistant reply, detect if this is a new conversation and fire an async `@Async` method to generate the name (guarded by `namingInProgress` flag).
+4. Add `POST /conversations/{id}/rename` and `GET /conversations` endpoints to `OllamaController`.
+5. Update `GET /conversations/{id}` response to include id/name wrapper.
+6. Add `conversationName` field to `ChatResponse`.
+7. Add `app.conversations.naming-prompt` and `app.conversations.naming-model` config.
+8. Add tests for async naming, rename endpoint, concurrency, and listing.
+
+*End of proposal*
