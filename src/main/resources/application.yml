@@ -6,7 +6,12 @@ spring:
     name: ollama-proxy
   ai:
     ollama:
-      base-url: http://172.21.144.1:11434
+      base-url: http://localhost:11434
       chat:
         options:
           model: llama3 # Default fallback model
+
+app:
+  conversations:
+    max-history-messages: 1000
+    ttl: 24h

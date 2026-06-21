@@ -29,25 +29,76 @@ For detailed requirements and API specifications, see the [PRD.md](./PRD.md).
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check – returns service status. |
-| `/chat` | POST | Chat inference – send `{"prompt":"your text"}` and receive model reply. |
+| `/chat` | POST | Chat inference – send `{"prompt":"your text", "model":"..."}`. If `conversationId` is omitted, the server auto-generates one and returns it. Reuse that ID on subsequent calls to continue the conversation. |
+| `/conversations/{conversationId}` | GET | Fetch the stored message history for a conversation. |
+| `/conversations/{conversationId}` | DELETE | Clear a stored conversation. |
 | `/models` | GET | List locally available Ollama models. |
 | `/models/pull` | POST | Pull a model from the registry. Payload: `{"model":"model_name","stream":false}`. |
 | `/models/{name}` | DELETE | Delete a locally stored Ollama model. |
 
 ## Usage Examples
 
-### curl
+### Multi-turn conversation flow
+
+The server manages conversation IDs for you. Start a conversation without an ID, grab it from the response, then reuse it for follow-ups.
+
+#### 1. Start a conversation (server generates the ID)
+
+```bash
+RESPONSE=$(curl -s -X POST -H "Content-Type: application/json" \
+     -d '{"prompt":"What is 2+2?","model":"llama3:latest"}' \
+     http://localhost:5000/chat)
+echo "$RESPONSE"
+
+# Extract the conversationId from the response
+CONV_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['conversationId'])")
+```
+
+Example response — note the `conversationId` is always returned:
+
+```json
+{"model":"llama3:latest","message":{"role":"assistant","content":"4"},"done":true,"conversationId":"a1b2c3d4-...","response":"4"}
+```
+
+#### 2. Continue the conversation (reuse the same conversationId)
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+     -d '{"prompt":"What was my first question?","model":"llama3:latest","conversationId":"'$CONV_ID'"}' \
+     http://localhost:5000/chat -w "\n%{http_code}\n"
+```
+
+The model refers back to previous messages because the full history is forwarded to Ollama.
+
+#### 3. Inspect stored history
+
+```bash
+curl -s http://localhost:5000/conversations/$CONV_ID -w "\n%{http_code}\n"
+```
+
+#### 4. Clear conversation when done
+
+```bash
+curl -s -X DELETE http://localhost:5000/conversations/$CONV_ID -w "\n%{http_code}\n"
+```
+
+> **Note:** You can also provide your own UUID if you prefer — just include it in the request as `"conversationId":"your-uuid"`. The server uses whatever you pass.
+
+### Stateless chat (single turn)
+
+Omit `conversationId` entirely and ignore it in the response if you don't need history:
+
+```bash
+curl -s -X POST -H "Content-Type: application/json" \
+     -d '{"prompt":"Hello in one word","model":"llama3:latest"}' \
+     http://localhost:5000/chat -w "\n%{http_code}\n"
+```
+
+### Other endpoints
 
 #### Health check
 ```bash
 curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/health
-```
-
-#### Chat
-```bash
-curl -s -X POST -H "Content-Type: application/json" \
-     -d '{"prompt":"Hello"}' \
-     http://localhost:5000/chat -w "\n%{http_code}\n"
 ```
 
 #### List models

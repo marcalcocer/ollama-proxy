@@ -131,3 +131,48 @@ server {
 1. Install Ollama (Windows/WSL) and download a lightweight model (e.g., `phi3` or `llama3:8b`).
 2. Create the microservice.
 3. Decide on language/framework (e.g., Python with FastAPI or Node.js).
+
+## 7. Server‑Side Conversation History
+
+**Goal** – Enable multi‑turn chats without the client having to resend the full message list. The Spring API will keep a per‑conversation message buffer identified by a `conversationId`.
+
+### API changes
+- **POST `/chat`** – optional field `conversationId`.
+  - The client sends only the new user message.
+  - If `conversationId` is omitted, the request behaves as before (stateless).
+  - If `conversationId` is provided, the server loads the stored conversation, appends the new user message, forwards the *entire* history to Ollama, then stores the assistant reply too.
+- **GET `/conversations/{conversationId}`** – returns the stored message history (useful for debugging or UI).
+- **DELETE `/conversations/{conversationId}`** – clears a conversation, allowing a fresh start.
+
+### Storage (simple implementation)
+Create a Spring singleton bean `ConversationService` that holds a
+```java
+private final ConcurrentHashMap<String, List<Message>> store = new ConcurrentHashMap<>();
+```
+`Message` mirrors the Ollama chat schema (`role`, `content`). The bean offers `appendUserMessage(id, Message)`, `appendAssistantMessage(id, Message)`, `getMessages(id)`, and `clear(id)`.
+
+### Configuration
+- `app.conversations.max-history-messages` — configurable max buffer size per conversation. Default: `1000` messages.
+- `app.conversations.ttl` — configurable expiration time for inactive conversations. Default: `24h`.
+
+### Conversation flow
+1. Client sends `POST /chat` with `conversationId="abc123"` and a new user message.
+2. Service fetches existing list (or creates a new one), appends the user message, sends the full list to Ollama, receives assistant reply, appends it, and returns the assistant message to the client.
+3. Subsequent calls with the same `conversationId` automatically carry the accumulated context.
+
+### Security & Cleanup
+- Validate `conversationId` (UUID format recommended).
+- Add a TTL using a scheduled task that removes stale entries based on `app.conversations.ttl`.
+- Optionally replace the in-memory map with an embedded H2 table for persistence across restarts.
+- Keep the history bounded by `app.conversations.max-history-messages` so old messages are trimmed before sending to Ollama.
+
+### Impact on existing clients
+No breaking change: existing calls that omit `conversationId` continue to work statelessly. Clients that want stateful chats simply add the field.
+
+### Documentation updates
+- Extend the PRD `Endpoint Design` section with the new endpoints and request/response schemas.
+- Add a diagram showing the conversation buffer between the API and Ollama.
+
+---
+
+*The rest of the original Implementation Next Steps remain unchanged.*
