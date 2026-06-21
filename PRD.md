@@ -10,7 +10,7 @@ The AI Orchestrator is a local REST API that acts as an abstraction layer and ce
 
 ## 2. System Objectives
 - **Model Management:** List, download (pull), and delete Ollama models from any web client.
-- **Unified Inference:** Provide simple endpoints for chat, text generation, and embedding generation (vectors for intelligent searches).
+- **Unified Inference:** Provide simple endpoints for chat.
 - **Streaming Support:** Allow word-by-word responses (ChatGPT style) via Server-Sent Events (SSE).
 
 ## 3. Data Flow Architecture
@@ -57,28 +57,7 @@ Sends a conversation flow (message history) to maintain context.
 }
 ```
 
-#### POST `/generate`
-Simple text generation from a single prompt (no history needed).
 
-**Body (JSON):**
-```json
-{
-  "model": "mistral",
-  "prompt": "Write a formal email requesting vacation.",
-  "stream": false
-}
-```
-
-#### POST `/embeddings`
-Generates numerical vectors from text. Vital for future RAG (Retrieval-Augmented Generation) applications.
-
-**Body (JSON):** 
-```json
-{
-  "model": "nomic-embed-text", 
-  "prompt": "Q1 Income"
-}
-```
 
 ### 🛠️ Block 2: Model Management (Maintenance)
 #### GET `/models`
