@@ -24,6 +24,60 @@ A centralized AI Orchestrator API that acts as a gateway between home network ap
 
 For detailed requirements and API specifications, see the [PRD.md](./PRD.md).
 
+## 🚦 Getting Started
+
+### Prerequisites
+
+- **Java 17+** installed
+- **Ollama** running locally on port `11434` (default). Pull at least one model, e.g. `ollama pull llama3`
+
+### Quick Start
+
+```bash
+./start-dev.sh
+```
+
+This script will automatically:
+
+1. Install Ollama (if missing) and start the service
+2. Set up Nginx route injection (if Nginx is installed)
+3. Initialize the Gradle wrapper (if missing)
+4. Build and start the server on port `5000`
+5. Wait for the health check to confirm the app is ready
+
+Once you see `✅ AI Gateway is UP and responding!`, the server is ready.
+
+### Manual Start
+
+```bash
+# Build the project
+./gradlew build
+
+# Start the server (port 5000)
+./gradlew bootRun
+```
+
+### Verify it's running
+
+```bash
+curl http://localhost:5000/health
+# → {"status":"UP","service":"ollama-proxy"}
+```
+
+### Configuration
+
+All settings are in `src/main/resources/application.yml`:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `server.port` | `5000` | HTTP port |
+| `spring.ai.ollama.base-url` | `http://localhost:11434` | Ollama endpoint |
+| `spring.ai.ollama.chat.options.model` | `llama3` | Default chat model |
+| `app.conversations.max-history-messages` | `1000` | Max messages kept per conversation |
+| `app.conversations.ttl` | `24h` | How long inactive conversations are retained |
+| `app.conversations.naming-model` | `llama3.2:3b` | Lightweight model used for auto-naming |
+| `app.conversations.naming-prompt` | *see yml* | Prompt template for title generation |
+
 ## 📡 API Endpoints
 
 | Endpoint | Method | Description |
